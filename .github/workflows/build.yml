@@ -1,0 +1,103 @@
+name: Build APK
+on:
+  push:
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.9
+      - name: Make Android project
+        run: |
+          URL=$(tr -d ' \r\n' < url.txt)
+          P=$GITHUB_WORKSPACE/proj
+          mkdir -p $P/app/src/main/java/uz/jarvis/app
+          cd $P
+          cat > settings.gradle <<'EOF'
+          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement { repositories { google(); mavenCentral() } }
+          rootProject.name = 'Jarvis'
+          include ':app'
+          EOF
+          cat > build.gradle <<'EOF'
+          plugins { id 'com.android.application' version '8.5.2' apply false }
+          EOF
+          cat > app/build.gradle <<'EOF'
+          plugins { id 'com.android.application' }
+          android {
+            namespace 'uz.jarvis.app'
+            compileSdk 34
+            defaultConfig { applicationId 'uz.jarvis.app'; minSdk 24; targetSdk 34; versionCode 1; versionName '1.0' }
+            compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
+          }
+          EOF
+          cat > app/src/main/AndroidManifest.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+            <uses-permission android:name="android.permission.INTERNET"/>
+            <uses-permission android:name="android.permission.CAMERA"/>
+            <uses-permission android:name="android.permission.RECORD_AUDIO"/>
+            <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS"/>
+            <uses-feature android:name="android.hardware.camera" android:required="false"/>
+            <application android:label="Jarvis" android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+              <activity android:name=".MainActivity" android:exported="true" android:configChanges="orientation|screenSize|keyboardHidden">
+                <intent-filter>
+                  <action android:name="android.intent.action.MAIN"/>
+                  <category android:name="android.intent.category.LAUNCHER"/>
+                </intent-filter>
+              </activity>
+            </application>
+          </manifest>
+          EOF
+          cat > app/src/main/java/uz/jarvis/app/MainActivity.java <<'EOF'
+          package uz.jarvis.app;
+          import android.Manifest;
+          import android.app.Activity;
+          import android.os.Bundle;
+          import android.webkit.PermissionRequest;
+          import android.webkit.WebChromeClient;
+          import android.webkit.WebSettings;
+          import android.webkit.WebView;
+          import android.webkit.WebViewClient;
+          public class MainActivity extends Activity {
+            WebView w;
+            @Override protected void onCreate(Bundle b) {
+              super.onCreate(b);
+              requestPermissions(new String[]{Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO}, 1);
+              w = new WebView(this);
+              setContentView(w);
+              WebSettings s = w.getSettings();
+              s.setJavaScriptEnabled(true);
+              s.setDomStorageEnabled(true);
+              s.setMediaPlaybackRequiresUserGesture(false);
+              w.setWebViewClient(new WebViewClient());
+              w.setWebChromeClient(new WebChromeClient() {
+                @Override public void onPermissionRequest(final PermissionRequest r) {
+                  runOnUiThread(new Runnable() { public void run() { r.grant(r.getResources()); } });
+                }
+              });
+              w.loadUrl("__URL__");
+            }
+            @Override public void onBackPressed() {
+              if (w.canGoBack()) w.goBack(); else super.onBackPressed();
+            }
+          }
+          EOF
+          sed -i "s|__URL__|$URL|" app/src/main/java/uz/jarvis/app/MainActivity.java
+      - name: Build
+        run: cd proj && gradle assembleDebug --no-daemon
+      - name: Publish APK
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp proj/app/build/outputs/apk/debug/app-debug.apk Jarvis.apk
+          gh release create "v${{ github.run_number }}" Jarvis.apk --title "Jarvis ${{ github.run_number }}" --notes "Jarvis APK"
